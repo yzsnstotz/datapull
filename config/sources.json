@@ -1,0 +1,16 @@
+[
+  {
+    "id": "jaf_or_jp",
+    "title": "JAF官方",
+    "type": "official",
+    "lang": "ja",
+    "version": "2025Q4",
+    "seeds": [
+      "https://jaf.or.jp"
+    ],
+    "include": [],
+    "exclude": [],
+    "maxDepth": 2,
+    "maxPages": 50
+  }
+]

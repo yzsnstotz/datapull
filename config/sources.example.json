@@ -1,0 +1,38 @@
+[
+  {
+    "id": "jaf_or_jp",
+    "title": "JAF官方",
+    "type": "official",
+    "lang": "ja",
+    "version": "2025Q4",
+    "seeds": [
+      "https://jaf.or.jp"
+    ],
+    "include": [],
+    "exclude": [],
+    "maxDepth": 2,
+    "maxPages": 50
+  },
+  {
+    "id": "example_auth_site",
+    "title": "需要登录的示例网站",
+    "type": "official",
+    "lang": "ja",
+    "version": "2025Q4",
+    "seeds": [
+      "https://example.com/private"
+    ],
+    "include": [],
+    "exclude": [],
+    "maxDepth": 2,
+    "maxPages": 50,
+    "auth": {
+      "cookies": "session_id=abc123; token=xyz789",
+      "authorization": "Bearer your_token_here",
+      "headers": {
+        "X-Custom-Header": "custom_value"
+      }
+    }
+  }
+]
+

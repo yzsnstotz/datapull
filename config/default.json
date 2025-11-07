@@ -1,0 +1,32 @@
+{
+  "crawler": {
+    "concurrency": 4,
+    "delayMs": 400,
+    "maxRetries": 3,
+    "timeoutMs": 15000,
+    "userAgent": "DatapullBot/1.0 (+https://github.com/your-org/datapull)",
+    "maxRedirects": 3,
+    "respectRobotsTxt": true
+  },
+  "chunking": {
+    "minSize": 500,
+    "maxSize": 800,
+    "overlap": 50
+  },
+  "ingestion": {
+    "batchSize": 50,
+    "maxRetries": 3,
+    "retryDelayMs": 1000
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "file": "logs/datapull.log"
+  },
+  "limits": {
+    "maxPagesPerSource": 100,
+    "maxCrawlDepth": 3,
+    "minContentLength": 300
+  }
+}
+

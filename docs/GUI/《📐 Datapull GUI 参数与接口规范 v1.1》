@@ -1,0 +1,463 @@
+好的 ✅
+以下为可直接交付给 Cursor / O1 的规范文件：
+
+---
+
+# 📐 《Datapull GUI 参数与接口规范 v1.1》
+
+**版本**：v1.1
+**发布日期**：2025-11-07
+**适用范围**：Datapull 前端 GUI + 本地 API 服务（后端）
+**配套文档**：《Datapull GUI 研发文档 v1.1》《DriveQuiz API v1.1 三件套（产品/研发/参数）》
+
+---
+
+## 0. 目标与边界
+
+* 本规范用于**前端 GUI ↔ Datapull 本地 API**的参数与接口统一；
+* GUI 只负责**配置/任务/日志/上传**的可视化，不改变 Datapull 核心爬取与分片逻辑；
+* 上传到 DriveQuiz 仅通过 Datapull 后端转发，GUI 不直接调用 DriveQuiz。
+
+---
+
+## 1. 目录与文件
+
+```
+apps/datapull/
+ ├─ src/core/                      # 已有：抓取、抽取、分片、入库
+ ├─ src/api/                       # 后端：Fastify（新增/对齐）
+ │   ├─ index.ts                   # 服务启动与路由聚合
+ │   └─ routes/
+ │       ├─ sources.ts             # GET/POST/PUT/DELETE /api/sources*
+ │       ├─ tasks.ts               # POST /api/tasks/*, GET /api/tasks/status
+ │       ├─ logs.ts                # GET /api/logs
+ │       ├─ upload.ts              # POST /api/upload/batch
+ │       └─ system.ts              # GET /api/system/status
+ └─ src/gui/                       # 前端：Vue3 + Vite + Pinia
+     ├─ pages/                     # Pages（Sources / Tasks / Upload / Logs / System）
+     ├─ components/                # DataTable / LogViewer / StatCard ...
+     ├─ services/datapullApi.ts    # axios 封装（统一拦截器）
+     ├─ store/guiStore.ts          # Pinia 全局状态
+     └─ router.ts                  # 路由声明
+```
+
+---
+
+## 2. 枚举与通用类型
+
+```ts
+// src/gui/types/common.ts
+export type ISODate = string;
+
+export type TaskStatus = "idle" | "running" | "stopped" | "error";
+export type ChunkStatus = "pending" | "uploaded" | "failed";
+export type LogType = "system" | "crawl" | "upload";
+export type LangCode = "ja" | "zh" | "en";
+
+export interface ApiRespOk<T> { success: true; data: T; }
+export interface ApiRespErr { success: false; error: { code: string; message: string; details?: any; } }
+export type ApiResp<T> = ApiRespOk<T> | ApiRespErr;
+```
+
+---
+
+## 3. 数据模型（前后端一致）
+
+### 3.1 Source（数据源）
+
+```ts
+export interface Source {
+  id: string;                  // 唯一：如 "gov_npa_driving"
+  name: string;                // 展示名
+  seedUrls: string[];          // 起始URL
+  include: string[];           // URL包含规则（glob/regex）
+  exclude: string[];           // URL排除规则
+  lang: LangCode;              // 语言
+  version: string;             // 版本，如 "2025Q1"
+  enabled: boolean;            // 是否纳入任务
+  crawlDepth?: number;         // 爬取深度（默认2）
+  rateLimitQPS?: number;       // 抓取速率限制
+  notes?: string;              // 备注
+  updatedAt: ISODate;
+  createdAt: ISODate;
+}
+```
+
+### 3.2 Task（任务状态）
+
+```ts
+export interface TaskStatusDTO {
+  status: TaskStatus;          // idle|running|stopped|error
+  runningSources: string[];    // 当前执行的 source.id 列表
+  startedAt?: ISODate;
+  lastHeartbeat?: ISODate;
+  progress?: {                  // 按 source 汇总
+    [sourceId: string]: {
+      pagesVisited: number;
+      chunksGenerated: number;
+      uploaded: number;
+      failed: number;
+    };
+  };
+}
+```
+
+### 3.3 Chunk（分片记录）
+
+```ts
+export interface ChunkDTO {
+  id: string;                  // 本地唯一ID
+  sourceId: string;
+  title: string;
+  url: string;
+  content: string;
+  version: string;
+  lang: LangCode;
+  meta: {
+    chunkIndex: number;
+    totalChunks: number;
+    contentHash: string;       // sha256
+  };
+  status: ChunkStatus;         // pending|uploaded|failed
+  errorMessage?: string;
+  createdAt: ISODate;
+  updatedAt: ISODate;
+}
+```
+
+### 3.4 System（系统状态）
+
+```ts
+export interface SystemStatusDTO {
+  version: string;             // Datapull 版本
+  appUptimeSec: number;
+  cpuUsage: number;            // %
+  memUsage: number;            // %
+  diskFreeGB: number;
+  queueSize: number;           // 待处理/待上传 队列长度
+  driveQuizReachable: boolean; // 连通性探测
+  lastUploadAt?: ISODate;
+}
+```
+
+---
+
+## 4. 后端 API（REST）
+
+**Base URL**：`/api`
+
+### 4.1 Sources（数据源管理）
+
+#### GET `/api/sources`
+
+* **查询参数**：`q?=keyword`（可选，按 id/name 模糊）
+* **响应**：`ApiResp<Source[]>`
+
+#### POST `/api/sources`
+
+* **请求体**：`Source`（创建时 `id` 唯一、`createdAt/updatedAt` 后端填充）
+* **校验**：
+
+  * `id`：`^[a-z0-9_]{3,50}$`
+  * `seedUrls`：非空 http(s)
+* **响应**：`ApiResp<Source>`
+
+#### PUT `/api/sources/:id`
+
+* **请求体**：`Partial<Source>`（不可变更 id）
+* **响应**：`ApiResp<Source>`
+
+#### DELETE `/api/sources/:id`
+
+* **响应**：`ApiResp<{ deleted: boolean }>`
+
+### 4.2 Tasks（任务控制）
+
+#### POST `/api/tasks/start`
+
+* **请求体**：
+
+```ts
+{ sourceIds?: string[]; mode?: "full" | "incremental"; }
+```
+
+* `sourceIds` 为空则对所有 `enabled=true` 的源执行
+* **响应**：`ApiResp<{ started: boolean; startedAt: ISODate }>`
+
+#### POST `/api/tasks/stop`
+
+* **响应**：`ApiResp<{ stopped: boolean; stoppedAt: ISODate }>`
+
+#### GET `/api/tasks/status`
+
+* **响应**：`ApiResp<TaskStatusDTO>`
+
+### 4.3 Logs（日志）
+
+#### GET `/api/logs`
+
+* **查询参数**：
+
+  * `type?=system|crawl|upload`（默认全部）
+  * `sourceId?=...`
+  * `level?=info|warn|error`
+  * `limit?=100`（最大 1000）
+* **响应**：
+
+```ts
+ApiResp<{
+  items: Array<{ ts: ISODate; type: LogType; level: string; message: string; sourceId?: string; }>
+  nextCursor?: string; // 预留
+}>
+```
+
+### 4.4 Upload（上传中心）
+
+#### GET `/api/chunks`
+
+* **查询参数**：
+
+  * `status?=pending|uploaded|failed`（默认 pending）
+  * `sourceId?=...`
+  * `page?=1` `pageSize?=50`（max 200）
+* **响应**：
+
+```ts
+ApiResp<{ items: ChunkDTO[]; page: number; pageSize: number; total: number; }>
+```
+
+#### POST `/api/upload/batch`
+
+* **用途**：将选中的分片批量上传至 **DriveQuiz**（通过 Datapull 后端转发）
+* **请求体**：
+
+```ts
+{
+  chunkIds: string[];          // 本地分片ID列表
+  mode?: "auto" | "manual";    // 默认 "manual"
+}
+```
+
+* **响应**（转发 DriveQuiz 的批量响应 + 本地映射）：
+
+```ts
+ApiResp<{
+  operationId: string;         // DriveQuiz opId
+  processed: number;
+  failed: number;
+  results: Array<{
+    chunkId: string;
+    status: "success" | "failed" | "duplicate";
+    error?: { code: string; message: string; };
+  }>;
+}>
+```
+
+### 4.5 System（系统状态）
+
+#### GET `/api/system/status`
+
+* **响应**：`ApiResp<SystemStatusDTO>`
+
+---
+
+## 5. WebSocket（实时推送）
+
+**路径**：`/ws`
+**协议**：JSON 行消息（每条一行）
+
+### 5.1 事件格式
+
+```ts
+type WsEvent =
+  | { event: "task.status"; payload: TaskStatusDTO }
+  | { event: "log.append"; payload: { ts: ISODate; type: LogType; level: string; message: string; sourceId?: string; } }
+  | { event: "chunk.update"; payload: { chunkId: string; status: ChunkStatus; errorMessage?: string } }
+  | { event: "upload.completed"; payload: { operationId: string; processed: number; failed: number } };
+```
+
+### 5.2 订阅策略
+
+* 连接即全量订阅；前端自行筛选展示；
+* 心跳：服务器每 30s 发送 `{"event":"heartbeat","payload":{}}`。
+
+---
+
+## 6. GUI 前端 API 封装（约定）
+
+**统一响应处理**：
+
+* 成功：`resp.data.success === true`
+* 失败：抛出 `{ code, message, details }`
+
+```ts
+// src/gui/services/datapullApi.ts
+import axios from "axios";
+const api = axios.create({ baseURL: "/api", timeout: 15000 });
+
+api.interceptors.response.use(
+  (r) => r.data.success ? r.data : Promise.reject(r.data.error),
+  (e) => Promise.reject({ code: "NETWORK_ERROR", message: e.message })
+);
+
+export const getSources = () => api.get("/sources");
+export const createSource = (payload) => api.post("/sources", payload);
+export const updateSource = (id, patch) => api.put(`/sources/${id}`, patch);
+export const deleteSource = (id) => api.delete(`/sources/${id}`);
+
+export const startTasks = (payload) => api.post("/tasks/start", payload);
+export const stopTasks = () => api.post("/tasks/stop");
+export const getTaskStatus = () => api.get("/tasks/status");
+
+export const getLogs = (params) => api.get("/logs", { params });
+
+export const listChunks = (params) => api.get("/chunks", { params });
+export const uploadBatch = (payload) => api.post("/upload/batch", payload);
+
+export const getSystemStatus = () => api.get("/system/status");
+```
+
+---
+
+## 7. 错误码
+
+| code             | HTTP | 含义                   | 解决建议             |
+| ---------------- | ---- | -------------------- | ---------------- |
+| UNAUTHORIZED     | 401  | 未配置或无效的 GUI 访问令牌（如需） | 检查登录/令牌          |
+| INVALID_REQUEST  | 400  | 参数非法                 | 检查表单或调用参数        |
+| SOURCE_DUPLICATE | 409  | Source.id 已存在        | 更换 id            |
+| TASK_CONFLICT    | 409  | 任务运行中，无法重复启动         | 等待或先停止           |
+| NOT_FOUND        | 404  | 资源不存在                | 检查 id            |
+| UPLOAD_FAILED    | 502  | 转发至 DriveQuiz 失败     | 检查 DriveQuiz API |
+| RATE_LIMITED     | 429  | 频控                   | 降低频率             |
+| INTERNAL_ERROR   | 500  | 未知错误                 | 查看日志             |
+
+---
+
+## 8. 校验规则（前端+后端一致）
+
+* `Source.id`：`^[a-z0-9_]{3,50}$`
+* `seedUrls`：每项必须 `http(s)://` 开头
+* `include/exclude`：可为 glob（`**/*.pdf`）或正则字符串（以 `/.../` 包裹）
+* `version`：`^\d{4}(Q[1-4])?$`（如 `2025Q1` 或 `2025`）
+* `lang`：`ja|zh|en`
+* `crawlDepth`：1–5（默认2）
+* `rateLimitQPS`：1–50（默认5）
+
+---
+
+## 9. 环境变量（.env）
+
+```bash
+# 服务端
+DATAPULL_PORT=3100
+DATAPULL_DATA_PATH=./data
+DATAPULL_SOURCES_FILE=./config/sources.json
+
+# DriveQuiz 转发
+DRIVEQUIZ_API_URL=https://drivequiz.example.com/api/v1/rag
+DRIVEQUIZ_API_TOKEN=xxx
+
+# 前端
+GUI_AUTH_ENABLED=false
+GUI_BASIC_USER=admin
+GUI_BASIC_PASS=admin123
+```
+
+> 若 `GUI_AUTH_ENABLED=true`，后端给 `/api/*` 增加 Basic Auth 中间件；前端在首次访问时弹窗登录。
+
+---
+
+## 10. 交互契约（关键流程）
+
+### 10.1 运行全量任务（GUI）
+
+1. `GET /api/sources` → 选择勾选 `enabled=true` 的源
+2. `POST /api/tasks/start`（不传 `sourceIds`）
+3. 订阅 `/ws`：`task.status` / `log.append` 实时渲染
+4. 任务结束 → `GET /api/chunks?status=pending`
+5. `POST /api/upload/batch`（选择性批量上传）
+6. `upload.completed` 事件 → 成功数与失败数落地
+
+### 10.2 修正失败分片并重试
+
+1. `GET /api/chunks?status=failed&sourceId=...`
+2. 勾选 → `POST /api/upload/batch`
+3. 查看结果 → 若仍失败，点击行内“查看错误详情”（显示 `errorMessage`）
+
+---
+
+## 11. 组件参数（核心组件）
+
+### 11.1 `<DataTable />`
+
+```ts
+props: {
+  columns: Array<{ key: string; label: string; width?: number; formatter?: (v:any,row:any)=>string }>,
+  rows: any[],
+  pagination?: { page: number; pageSize: number; total: number; onChange: (p)=>void },
+  selectable?: boolean,
+  onRowSelect?: (ids: string[]) => void
+}
+```
+
+### 11.2 `<LogViewer />`
+
+```ts
+props: {
+  logs: Array<{ ts: ISODate; type: LogType; level: string; message: string; sourceId?: string; }>,
+  autoScroll?: boolean
+}
+```
+
+### 11.3 `<StatCard />`
+
+```ts
+props: { label: string; value: string | number; hint?: string; loading?: boolean }
+```
+
+---
+
+## 12. 安全与性能
+
+* **速率限制**（后端）：
+
+  * `POST /api/tasks/start`：1 req / 10s
+  * `POST /api/upload/batch`：1 req / 2s
+* **大小限制**：
+
+  * `POST /api/upload/batch`：`chunkIds` ≤ 100
+* **日志脱敏**：禁止打印 `DRIVEQUIZ_API_TOKEN`；
+* **跨域**：GUI 与 API 同源部署，默认不启 CORS。
+
+---
+
+## 13. 验收 Checklist（要点）
+
+* [ ] Source CRUD 按校验规则工作，sources.json 正确落盘
+* [ ] Start/Stop 任务稳定，`/ws` 能实时更新 `task.status` 与 `log.append`
+* [ ] `GET /api/chunks` 支持分页与筛选
+* [ ] `POST /api/upload/batch` 能返回 DriveQuiz `operationId` 且逐条结果匹配
+* [ ] System 状态数值与服务器真实情况相符（允许 ±10% 浮动）
+* [ ] 错误码与提示信息与本规范一致
+
+---
+
+## 14. 附：后端对接 DriveQuiz 的转发契约
+
+* Datapull 后端将 `ChunkDTO[]` 映射为 DriveQuiz `BatchUploadRequest.docs`：
+
+  * `title/url/content/version/lang` → 原样
+  * `meta`：带 `sourceId/chunkIndex/totalChunks/contentHash`
+* 调用：`POST {DRIVEQUIZ_API_URL}/docs/batch`
+* 将 DriveQuiz 返回的 `results[].status` 映射到本地：
+
+  * `success|duplicate|failed` → 更新 `ChunkDTO.status`
+  * `failed` → 写入 `errorMessage`
+
+---
+
+**一句话总结**：
+
+> 本规范统一了 Datapull GUI 的**数据模型、REST/WS 接口、组件契约与错误码**，确保“配置—抓取—分片—上传—监控”的全链路在团队间**可替换、可联调、可验收**。
+> 若需要，我可以继续输出 **`.env.example`** 与 **接口 Mock 数据**，方便 Cursor 直接连通开发。
